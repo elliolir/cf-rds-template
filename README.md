@@ -9,7 +9,7 @@ You have your VPC stack deployed with exports of:
 * `${VPCStackName}-VPCID`
 * `${VPCStackName}-VPCCIDR`
 
-Example of the expected stack could be seen in `cloudformatino/vpc.yml`
+Example of the expected stack could be seen in `cloudformation/vpc.yml`
 
 Those parameters are used as a primary config of your DB VPC configuration. Currently, it's expecting that you
 either have your app hosted within that VPC or you manually 
