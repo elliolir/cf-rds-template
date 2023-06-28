@@ -19,3 +19,7 @@ define a peering connection (e.g. via `AWS::EC2::VPCPeeringConnection`)
 You should have `aws-cli` installed and logged-in to you AWS account.
 
 Then, you run `sh deploy.sh`
+
+## Not covered
+* Creds rotation;
+* More flexibility in setting the RDS params (e.g. engine, capacity);
