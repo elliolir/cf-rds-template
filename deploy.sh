@@ -1,0 +1,1 @@
+aws cloudformation deploy --template-file rds.yml --stack-name db-stack-np --parameter-overrides VPCStackName=vpc Env=test

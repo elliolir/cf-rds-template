@@ -1,0 +1,176 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Aurora Postgres Stack
+
+Parameters:
+  VPCStackName:
+    Description: 'Name of the CF stack that created the VPC'
+    Type: String
+  Env:
+    Type: String
+    Description: Environment you create this stack for
+  DBName:
+    Type: String
+    Description: DB Name
+  AuroraMaxCapacity:
+    Type: String
+    Description: Aurora Max capacity
+    Default: 25
+
+Resources:
+  DatabaseKmsKey:
+    Type: AWS::KMS::Key
+    Properties:
+      KeyPolicy:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: 'Enable IAM User Permissions'
+            Effect: 'Allow'
+            Principal:
+              AWS: !Sub 'arn:aws:iam::${AWS::AccountId}:root'
+            Action: 'kms:*'
+            Resource: '*'
+
+  DatabaseKmsKeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: !Sub 'alias/${DBName}-${Env}'
+      TargetKeyId: !Ref DatabaseKmsKey
+
+  DatabaseSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Description: Secret for RDS Aurora PostgreSQL database
+      Name: !Sub '${DBName}-creds-${Env}'
+      GenerateSecretString:
+        SecretStringTemplate: '{"username": "root"}'
+        GenerateStringKey: 'password'
+        PasswordLength: 16
+        ExcludeCharacters: '"@/\'
+
+  DatabaseSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: 'Database subnet group'
+      SubnetIds:
+        - Fn::ImportValue: !Sub '${VPCStackName}-PrivateSubnet1'
+        - Fn::ImportValue: !Sub '${VPCStackName}-PrivateSubnet2'
+
+  DatabaseSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: 'Security group for Aurora postgres instance'
+      VpcId:
+        Fn::ImportValue: !Sub '${VPCStackName}-VPCID'
+      SecurityGroupIngress:
+        - CidrIp:
+            Fn::ImportValue: !Sub '${VPCStackName}-VPCCIDR'
+          FromPort: 5432
+          ToPort: 5432
+          IpProtocol: tcp
+
+  DatabaseClusterParameterGroup:
+    Type: AWS::RDS::DBClusterParameterGroup
+    Properties:
+      Parameters:
+        rds.force_ssl: 1
+      Family: aurora-postgresql14
+      Description: 'Secure parameter group for Aurora PostgreSQL'
+      Tags:
+        - Key: 'Name'
+          Value: secure-aurora-postgresql14
+
+  DatabaseCluster:
+    Type: AWS::RDS::DBCluster
+    DependsOn:
+      - DatabaseSubnetGroup
+      - DatabaseClusterParameterGroup
+    Properties:
+      BackupRetentionPeriod: 35
+      DBClusterParameterGroupName: !Ref DatabaseClusterParameterGroup
+      DBSubnetGroupName: !Ref DatabaseSubnetGroup
+      MasterUsername: !Sub '{{resolve:secretsmanager:${DatabaseSecret}:SecretString:username}}'
+      MasterUserPassword: !Sub '{{resolve:secretsmanager:${DatabaseSecret}:SecretString:password}}'
+      DatabaseName: !Ref DBName
+      Engine: aurora-postgresql
+      Port: 5432
+      EngineVersion: 14.3
+      PreferredBackupWindow: '02:00-03:00'
+      PreferredMaintenanceWindow: 'sun:03:00-sun:04:00'
+      VpcSecurityGroupIds:
+        - Fn::GetAtt:
+            - DatabaseSecurityGroup
+            - GroupId
+      StorageEncrypted: 'true'
+      KmsKeyId: !GetAtt DatabaseKmsKey.Arn
+      EnableCloudwatchLogsExports:
+        - postgresql
+      ServerlessV2ScalingConfiguration:
+        MaxCapacity: !Ref AuroraMaxCapacity
+        MinCapacity: 0.5
+
+  DatabasePrimaryInstance:
+    Type: AWS::RDS::DBInstance
+    DependsOn:
+      - DatabaseSubnetGroup
+    Properties:
+      Engine: aurora-postgresql
+      DBClusterIdentifier: !Ref DatabaseCluster
+      DBInstanceClass: db.serverless
+      DBInstanceIdentifier: !Sub '${DBName}-db-${Env}'
+      DBSubnetGroupName: !Ref DatabaseSubnetGroup
+      CACertificateIdentifier: rds-ca-rsa2048-g1
+
+  SecretTargetAttachment:
+    Type: 'AWS::SecretsManager::SecretTargetAttachment'
+    Properties:
+      SecretId: !Ref DatabaseSecret
+      TargetId: !Ref DatabaseCluster
+      TargetType: AWS::RDS::DBCluster
+
+  DatabasePrimaryCPUAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: 'Primary database CPU utilization is over 80%.'
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      Dimensions:
+        - Name: DBInstanceIdentifier
+          Value: !Ref DatabasePrimaryInstance
+      EvaluationPeriods: 2
+      MetricName: CPUUtilization
+      Namespace: AWS/RDS
+      Period: 300
+      Statistic: Average
+      Threshold: 80
+      Unit: Percent
+
+  DatabasePrimaryMemoryAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: 'Primary database freeable memory is under 700MB.'
+      ComparisonOperator: LessThanOrEqualToThreshold
+      Dimensions:
+        - Name: DBInstanceIdentifier
+          Value: !Ref DatabasePrimaryInstance
+      EvaluationPeriods: 2
+      MetricName: FreeableMemory
+      Namespace: AWS/RDS
+      Period: 300
+      Statistic: Average
+      Threshold: 700000000
+      Unit: Bytes
+
+  DatabasePrimaryReplicationAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: 'Database replication latency is over 200ms.'
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      Dimensions:
+        - Name: DBInstanceIdentifier
+          Value: !Ref DatabasePrimaryInstance
+      EvaluationPeriods: 2
+      MetricName: AuroraReplicaLag
+      Namespace: AWS/RDS
+      Period: 300
+      Statistic: Average
+      Threshold: 200
+      Unit: Milliseconds
